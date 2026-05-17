@@ -1,3 +1,19 @@
+# ============================================================
+# Supplier Scorecard Tool
+# Project 4a — Procurement Intelligence Suite
+#
+# Copyright (c) 2026 Louis T. Filiano, MBA
+# All Rights Reserved.
+#
+# This software and its source code are proprietary and
+# confidential. Unauthorized copying, distribution, or use
+# of this file, via any medium, is strictly prohibited.
+#
+# Author:  Louis T. Filiano, MBA
+# Contact: filianowork@gmail.com | (214) 907-3294
+# GitHub:  github.com/LFilianoProcurement
+# ============================================================
+
 import streamlit as st
 import json
 import csv
@@ -437,12 +453,34 @@ def calculate_scores(scores):
     return category_results, overall_pct, overall_tier
 
 
-RESPONSES_FILE = "survey_responses.json"
+GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID", "")
+SERVICE_ACCOUNT_FILE = "service_account.json"
+
+def get_sheet():
+    """Connect to Google Sheet — supports local file and Streamlit Cloud secrets"""
+    try:
+        import gspread, streamlit as st
+        from google.oauth2.service_account import Credentials
+        scopes = ["https://www.googleapis.com/auth/spreadsheets",
+                  "https://www.googleapis.com/auth/drive"]
+        try:
+            service_account_info = dict(st.secrets["gcp_service_account"])
+            creds = Credentials.from_service_account_info(service_account_info, scopes=scopes)
+        except:
+            creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=scopes)
+        client = gspread.authorize(creds)
+        sheet_id = os.getenv("GOOGLE_SHEET_ID", "")
+        try:
+            sheet_id = st.secrets.get("GOOGLE_SHEET_ID", sheet_id)
+        except:
+            pass
+        return client.open_by_key(sheet_id).sheet1
+    except:
+        return None
 
 def save_to_unified_dashboard(supplier_name, reviewer, period, category_results, overall_pct):
-    """Save scorecard results to shared survey_responses.json for unified dashboard view"""
-    import datetime, json, os
-    # Build category scores in same format as customer survey
+    """Save scorecard results to Google Sheet for unified dashboard view"""
+    import datetime, json
     cat_scores = {}
     for cat_name, result in category_results.items():
         if result["scored_items"] > 0:
@@ -461,23 +499,37 @@ def save_to_unified_dashboard(supplier_name, reviewer, period, category_results,
         "period": period,
         "weight": 3
     }
-    existing = []
     try:
-        if os.path.exists(RESPONSES_FILE):
-            with open(RESPONSES_FILE, "r") as f:
-                existing = json.load(f)
-    except:
-        pass
-    # Replace any existing internal record for same supplier+period
-    existing = [r for r in existing if not (
-        r.get("source") == "internal" and
-        r.get("supplier", "").lower() == supplier_name.lower() and
-        r.get("period", "") == period
-    )]
-    existing.append(record)
-    with open(RESPONSES_FILE, "w") as f:
-        json.dump(existing, f, indent=2)
-    return True
+        sheet = get_sheet()
+        if sheet:
+            # Remove existing internal record for same supplier+period
+            rows = sheet.get_all_records()
+            rows_to_keep = [r for r in rows if not (
+                r.get("source") == "internal" and
+                str(r.get("supplier","")).lower() == supplier_name.lower() and
+                str(r.get("period","")) == period
+            )]
+            # Rewrite sheet
+            sheet.clear()
+            sheet.append_row(["id","submitted_at","supplier","customer_name",
+                               "customer_company","overall_avg","scores_json",
+                               "comments_json","source","period","weight"])
+            for r in rows_to_keep:
+                sheet.append_row([r.get("id",""), r.get("submitted_at",""),
+                                   r.get("supplier",""), r.get("customer_name",""),
+                                   r.get("customer_company",""), r.get("overall_avg",0),
+                                   r.get("scores_json","{}"), r.get("comments_json","{}"),
+                                   r.get("source",""), r.get("period",""), r.get("weight",1)])
+            sheet.append_row([
+                record["id"], record["submitted_at"], supplier_name, reviewer,
+                "Internal — Procurement", str(record["overall_avg"]),
+                json.dumps(cat_scores), json.dumps({}),
+                "internal", period, "3"
+            ])
+            return True
+    except Exception as e:
+        st.error(f"Could not save to Google Sheet: {e}")
+    return False
 
 
 def scores_to_csv(supplier_name, reviewer, period, scores, category_results, overall_pct, overall_tier):
@@ -701,6 +753,8 @@ def main():
 """)
         st.markdown("---")
         st.markdown("*Louis Filiano — Procurement Intelligence Suite*")
+        st.markdown("---")
+        st.markdown('<p style="color:#9CA3AF; font-size:0.75rem; text-align:center;">© 2026 Louis T. Filiano, MBA<br>All Rights Reserved</p>', unsafe_allow_html=True)
 
     # Header
     st.markdown("""
@@ -1166,3 +1220,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
